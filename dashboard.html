@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QuakeVerify · Stasiun Monitoring Seismik IoT</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --panel: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --cyan: #38bdf8;
+      --emerald: #22c55e;
+      --amber: #f59e0b;
+      --rose: #ef4444;
+    }
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { margin: 0; padding: 22px; background: var(--bg); color: var(--text); }
+    .wrap { max-width: 1120px; margin: 0 auto; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 12px; }
+    .brand h1 { margin: 0; font-size: 1.5rem; font-weight: 800; }
+    .brand p { margin: 4px 0 0; color: var(--muted); font-size: 0.88rem; }
+    .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input { padding: 9px 12px; border-radius: 8px; border: 1px solid var(--border); background: #0f172a; color: var(--text); font-size: 0.88rem; }
+    button { padding: 9px 14px; border-radius: 8px; border: none; font-weight: 700; cursor: pointer; font-size: 0.84rem; }
+    .btn-connect { background: var(--cyan); color: #0f172a; }
+    .btn-arm { background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid var(--emerald); }
+    .btn-disarm { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; border: 1px solid var(--border); }
+    .btn-test { background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid var(--rose); }
+    .hero-decision {
+      padding: 18px 22px; border-radius: 14px; border: 2px solid var(--emerald);
+      background: rgba(34, 197, 94, 0.1); margin-bottom: 18px; display: flex; justify-content: space-between; align-items: center;
+    }
+    .hero-decision.warn { border-color: var(--amber); background: rgba(245, 158, 11, 0.14); }
+    .hero-decision.danger { border-color: var(--rose); background: rgba(239, 68, 68, 0.22); }
+    .status-title { font-size: 1.65rem; font-weight: 900; letter-spacing: -0.02em; }
+    .status-reason { font-size: 0.95rem; color: #e2e8f0; margin-top: 4px; }
+    .score-pill { text-align: right; }
+    .score-num { font-size: 2.1rem; font-weight: 900; color: var(--cyan); }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
+    .card h3 { margin: 0 0 12px; font-size: 1rem; color: var(--cyan); display: flex; justify-content: space-between; }
+    .kv-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .kv { background: #0f172a; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); }
+    .kv span { display: block; font-size: 0.75rem; color: var(--muted); }
+    .kv strong { font-size: 1.15rem; color: var(--text); }
+    canvas { width: 100%; height: 220px; background: #0f172a; border-radius: 10px; border: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div class="brand">
+      <h1>🌏 QuakeVerify · Multi-Node Seismic & Tilt Dashboard</h1>
+      <p>Komunikasi 2 Arah via MQTT over WebSocket (HiveMQ Cloud) · Edge 1 & Edge 2 Fusion</p>
+    </div>
+    <div class="controls">
+      <input type="text" id="projectId" value="quakeverify_kelompok_01" placeholder="PROJECT_ID" />
+      <button class="btn-connect" onclick="connectDashboard()">Hubungkan Broker</button>
+      <button class="btn-arm" onclick="sendCommand('ARM')">🛡️ ARM</button>
+      <button class="btn-disarm" onclick="sendCommand('DISARM')">⏸ DISARM</button>
+      <button class="btn-test" onclick="sendCommand('TEST_ALARM')">🚨 Uji Alarm ke HP</button>
+    </div>
+  </div>
+
+  <div id="heroBox" class="hero-decision">
+    <div>
+      <div id="decisionStatus" class="status-title">NORMAL (AMAN)</div>
+      <div id="decisionReason" class="status-reason">Menunggu data telemetri dari Edge 1 (iPhone A) dan Edge 2 (iPhone B)...</div>
+    </div>
+    <div class="score-pill">
+      <div style="font-size: 0.78rem; color: var(--muted);">INDEKS SEISMIK AI</div>
+      <div id="decisionScore" class="score-num">0.0</div>
+      <div id="decisionMmi" style="font-size: 0.8rem; color: var(--cyan);">Skala MMI: I</div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h3><span>📱 EDGE 1 — Node Sudut A</span><small id="e1Time" style="color:var(--muted)">Belum ada data</small></h3>
+      <div class="kv-grid">
+        <div class="kv"><span>Peak Ground Accel (PGA)</span><strong id="e1Pga">0.000 m/s²</strong></div>
+        <div class="kv"><span>Getaran RMS</span><strong id="e1Rms">0.000 m/s²</strong></div>
+        <div class="kv"><span>Sudut Kemiringan 3D (Tilt)</span><strong id="e1Tilt">0.00 °</strong></div>
+        <div class="kv"><span>Rasio Seismik STA/LTA</span><strong id="e1Sta">1.00 x</strong></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3><span>📱 EDGE 2 — Node Sudut B</span><small id="e2Time" style="color:var(--muted)">Belum ada data</small></h3>
+      <div class="kv-grid">
+        <div class="kv"><span>Peak Ground Accel (PGA)</span><strong id="e2Pga">0.000 m/s²</strong></div>
+        <div class="kv"><span>Getaran RMS</span><strong id="e2Rms">0.000 m/s²</strong></div>
+        <div class="kv"><span>Sudut Kemiringan 3D (Tilt)</span><strong id="e2Tilt">0.00 °</strong></div>
+        <div class="kv"><span>Rasio Seismik STA/LTA</span><strong id="e2Sta">1.00 x</strong></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3><span>📈 Grafik Real-Time Peak Ground Acceleration (PGA m/s²) — Edge 1 (Biru) vs Edge 2 (Hijau) vs Ambang Gempa (Merah 0.85 m/s²)</span></h3>
+    <canvas id="chartCanvas" width="1040" height="220"></canvas>
+  </div>
+</div>
+
+<script>
+let client = null;
+const history1 = new Array(50).fill(0);
+const history2 = new Array(50).fill(0);
+let latestEdge1 = null;
+let latestEdge2 = null;
+
+function connectDashboard() {
+  const proj = document.getElementById('projectId').value.trim();
+  if (client) client.end();
+  client = mqtt.connect('wss://broker.hivemq.com:8884/mqtt');
+
+  client.on('connect', () => {
+    document.getElementById('decisionReason').textContent = `Terhubung ke HiveMQ (PROJECT_ID: ${proj}). Mendengarkan telemetri...`;
+    client.subscribe(`quakeverify/${proj}/edge/+/telemetry`, { qos: 1 });
+    client.subscribe(`quakeverify/${proj}/status`, { qos: 0 });
+    client.subscribe(`quakeverify/${proj}/alerts`, { qos: 1 });
+  });
+
+  client.on('message', (topic, message) => {
+    try {
+      const data = JSON.parse(message.toString());
+      if (topic.includes('/edge/edge1/telemetry')) {
+        latestEdge1 = data;
+        updateNodeUI('e1', data);
+        history1.push(data.pga_ms2 || 0);
+        if (history1.length > 50) history1.shift();
+        drawChart();
+        evaluateFallbackInBrowser();
+      } else if (topic.includes('/edge/edge2/telemetry')) {
+        latestEdge2 = data;
+        updateNodeUI('e2', data);
+        history2.push(data.pga_ms2 || 0);
+        if (history2.length > 50) history2.shift();
+        drawChart();
+        evaluateFallbackInBrowser();
+      } else if (topic.endsWith('/status') || topic.endsWith('/alerts')) {
+        renderDecision(data);
+      }
+    } catch (e) {}
+  });
+}
+
+function updateNodeUI(prefix, d) {
+  document.getElementById(`${prefix}Pga`).textContent = `${(d.pga_ms2 || 0).toFixed(3)} m/s²`;
+  document.getElementById(`${prefix}Rms`).textContent = `${(d.vibration_rms || 0).toFixed(3)} m/s²`;
+  document.getElementById(`${prefix}Tilt`).textContent = `${(d.tilt_deg || 0).toFixed(2)} °`;
+  document.getElementById(`${prefix}Sta`).textContent = `${(d.sta_lta_ratio || 1).toFixed(2)} x`;
+  document.getElementById(`${prefix}Time`).textContent = `Paket #${d.sequence} · baru saja`;
+}
+
+// Evaluasi langsung di browser jika detector.py belum dinyalakan
+function evaluateFallbackInBrowser() {
+  const pga1 = latestEdge1 ? latestEdge1.pga_ms2 : 0;
+  const pga2 = latestEdge2 ? latestEdge2.pga_ms2 : 0;
+  const s1 = pga1 >= 0.85;
+  const s2 = pga2 >= 0.85;
+  if (s1 && s2) {
+    renderDecision({
+      status: 'EARTHQUAKE_ALERT',
+      severity_score: Math.min(100, (pga1 + pga2) * 18),
+      mmi_estimate: 'V (Kuat)',
+      reason: `Terverifikasi GEMPA! Kedua node berguncang serentak (${pga1.toFixed(2)} & ${pga2.toFixed(2)} m/s²).`
+    });
+  } else if (s1 || s2) {
+    renderDecision({
+      status: 'LOCAL_DISTURBANCE',
+      severity_score: 32.0,
+      mmi_estimate: 'Gangguan Lokal',
+      reason: `Hanya ${s1 ? 'Edge 1' : 'Edge 2'} yang terguncang. Node pasangan tenang (Alarm gempa ditahan).`
+    });
+  }
+}
+
+function renderDecision(d) {
+  const box = document.getElementById('heroBox');
+  document.getElementById('decisionStatus').textContent = d.status || 'NORMAL';
+  document.getElementById('decisionReason').textContent = d.reason || '';
+  document.getElementById('decisionScore').textContent = (d.severity_score || 0).toFixed(1);
+  document.getElementById('decisionMmi').textContent = `Skala MMI: ${d.mmi_estimate || 'I'}`;
+
+  if (d.status === 'EARTHQUAKE_ALERT' || d.status === 'STRUCTURAL_TILT_ALERT') {
+    box.className = 'hero-decision danger';
+  } else if (d.status === 'LOCAL_DISTURBANCE' || d.status === 'DISARMED') {
+    box.className = 'hero-decision warn';
+  } else {
+    box.className = 'hero-decision';
+  }
+}
+
+function sendCommand(action) {
+  if (!client || !client.connected) return alert('Hubungkan ke broker terlebih dahulu!');
+  const proj = document.getElementById('projectId').value.trim();
+  client.publish(`quakeverify/${proj}/command`, JSON.stringify({ action, sent_at: Date.now() }), { qos: 1 });
+}
+
+function drawChart() {
+  const canvas = document.getElementById('chartCanvas');
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const maxVal = 4.0;
+  // Garis threshold 0.85 m/s^2
+  const thY = h - (0.85 / maxVal) * (h - 20) - 10;
+  ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath(); ctx.moveTo(0, thY); ctx.lineTo(w, thY); ctx.stroke();
+  ctx.setLineDash([]);
+
+  const drawSeries = (arr, color) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    arr.forEach((v, idx) => {
+      const x = (idx / (arr.length - 1)) * (w - 20) + 10;
+      const y = h - (Math.min(v, maxVal) / maxVal) * (h - 20) - 10;
+      if (idx === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  };
+
+  drawSeries(history1, '#38bdf8');
+  drawSeries(history2, '#22c55e');
+}
+
+connectDashboard();
+drawChart();
+</script>
+</body>
+</html>

@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>QuakeVerify · iOS/Mobile Edge Node</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --safe: #22c55e;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--text); transition: background 0.25s; }
+    body.alarm-flash { background: #7f1d1d !important; }
+    .container { max-width: 480px; margin: 0 auto; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .title { font-size: 1.25rem; font-weight: 800; letter-spacing: -0.02em; }
+    .badge { padding: 4px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 700; background: var(--border); }
+    .badge.online { background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid #22c55e; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+    label { display: block; font-size: 0.78rem; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+    input, select {
+      width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
+      background: #0b1120; color: var(--text); font-size: 0.92rem; margin-bottom: 10px;
+    }
+    .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
+    button {
+      padding: 12px; border-radius: 10px; border: none; font-weight: 700; font-size: 0.9rem;
+      cursor: pointer; transition: opacity 0.15s;
+    }
+    button:active { opacity: 0.8; }
+    .btn-primary { background: var(--accent); color: #0f172a; }
+    .btn-stop { background: #475569; color: var(--text); }
+    .btn-sim { background: rgba(245, 158, 11, 0.18); color: #fbbf24; border: 1px solid #f59e0b; font-size: 0.8rem; padding: 9px; }
+    .status-banner {
+      text-align: center; padding: 14px; border-radius: 12px; font-weight: 800; font-size: 1.05rem;
+      background: rgba(34, 197, 94, 0.15); border: 1px solid var(--safe); color: #4ade80; margin-bottom: 12px;
+    }
+    .status-banner.warn { background: rgba(245, 158, 11, 0.18); border-color: var(--warn); color: #fbbf24; }
+    .status-banner.danger { background: rgba(239, 68, 68, 0.28); border-color: var(--danger); color: #fca5a5; animation: pulse 0.8s infinite alternate; }
+    @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.02); } }
+    .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .metric-box { background: #0b1120; border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+    .metric-label { font-size: 0.72rem; color: var(--muted); }
+    .metric-val { font-size: 1.2rem; font-weight: 800; color: var(--accent); margin-top: 2px; }
+    .note { font-size: 0.76rem; color: var(--muted); line-height: 1.4; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div>
+      <div class="title">🌏 QuakeVerify · iOS Edge</div>
+      <div class="note">Sensor Seismik & Kemiringan 2 Arah (iPhone Safari / Web)</div>
+    </div>
+    <span id="connBadge" class="badge">Offline</span>
+  </div>
+
+  <div id="statusBanner" class="status-banner">
+    STATUS: MENUNGGU SENSOR AKTIF
+  </div>
+
+  <div class="card">
+    <label>Peran Perangkat (Pilih Berbeda di HP 1 & HP 2)</label>
+    <select id="deviceId">
+      <option value="edge1">Edge 1 — Node Sudut Meja A (Utama)</option>
+      <option value="edge2">Edge 2 — Node Sudut Ruangan B (Verifikator)</option>
+    </select>
+
+    <label>PROJECT_ID Kelompok (Sama dengan Laptop)</label>
+    <input type="text" id="projectId" value="quakeverify_kelompok_01" />
+
+    <label>MQTT WebSocket TLS Broker</label>
+    <input type="text" id="brokerUrl" value="wss://broker.hivemq.com:8884/mqtt" />
+
+    <div class="btn-row">
+      <button class="btn-primary" id="btnStart" onclick="startEdge()">🚀 Aktifkan Sensor iOS</button>
+      <button class="btn-stop" onclick="stopEdge()">⏹ Hentikan</button>
+    </div>
+
+    <div style="margin-top: 10px;">
+      <label>Tombol Uji Cepat (Jika iPhone ditaruh diam di meja):</label>
+      <div class="btn-row">
+        <button class="btn-sim" onclick="injectSynthetic('bump')">💥 Simulasi Senggolan</button>
+        <button class="btn-sim" onclick="injectSynthetic('quake')">🌋 Simulasi Gempa 5dtk</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <label style="margin-bottom: 8px;">Hasil Pengolahan Data di Edge (Dikirim ke MQTT):</label>
+    <div class="metrics-grid">
+      <div class="metric-box">
+        <div class="metric-label">1A. Peak Ground Accel (PGA)</div>
+        <div class="metric-val"><span id="valPga">0.000</span> <small>m/s²</small></div>
+      </div>
+      <div class="metric-box">
+        <div class="metric-label">1B. Getaran RMS</div>
+        <div class="metric-val"><span id="valRms">0.000</span> <small>m/s²</small></div>
+      </div>
+      <div class="metric-box">
+        <div class="metric-label">2A. Sudut Miring 3D (Tilt)</div>
+        <div class="metric-val"><span id="valTilt">0.00</span> <small>°</small></div>
+      </div>
+      <div class="metric-box">
+        <div class="metric-label">2B. Rasio Seismik STA/LTA</div>
+        <div class="metric-val"><span id="valSta">1.00</span> <small>x</small></div>
+      </div>
+    </div>
+    <div class="note" style="margin-top: 10px;">
+      Paket terkirim: <b id="valSeq">0</b> | Sumber: <b id="valSource">Belum aktif</b>
+    </div>
+  </div>
+</div>
+
+<script>
+let mqttClient = null;
+let running = false;
+let seq = 0;
+let samples = [];
+let ltaBaseline = 0.08;
+let refGravity = null;
+let publishTimer = null;
+let syntheticMode = null;
+let syntheticUntil = 0;
+let audioCtx = null;
+
+// Web Audio API Siren untuk iPhone (karena iOS Safari memblokir navigator.vibrate)
+function playAlarmSiren() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sawtooth';
+    const now = audioCtx.currentTime;
+    osc.frequency.setValueAtTime(520, now);
+    osc.frequency.linearRampToValueAtTime(880, now + 0.35);
+    osc.frequency.linearRampToValueAtTime(520, now + 0.7);
+    gain.gain.setValueAtTime(0.25, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.75);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + 0.75);
+  } catch (e) { console.log("Audio alarm error:", e); }
+  if (navigator.vibrate) navigator.vibrate([400, 150, 400]);
+  document.body.classList.add('alarm-flash');
+  setTimeout(() => document.body.classList.remove('alarm-flash'), 900);
+}
+
+function injectSynthetic(mode) {
+  syntheticMode = mode;
+  syntheticUntil = Date.now() + 5000;
+}
+
+function handleMotionEvent(event) {
+  if (!running) return;
+  const acc = event.accelerationIncludingGravity || event.acceleration;
+  const rot = event.rotationRate;
+  if (!acc) return;
+
+  let ax = acc.x || 0, ay = acc.y || 0, az = acc.z || 9.81;
+  // iOS rotationRate adalah deg/s -> konversi ke rad/s
+  let gx = ((rot && rot.alpha) || 0) * Math.PI / 180;
+  let gy = ((rot && rot.beta) || 0) * Math.PI / 180;
+  let gz = ((rot && rot.gamma) || 0) * Math.PI / 180;
+
+  samples.push({ t: performance.now() / 1000, ax, ay, az, gx, gy, gz });
+  if (samples.length > 25) samples.shift();
+  document.getElementById('valSource').textContent = 'iOS DeviceMotion Sensor';
+}
+
+async function startEdge() {
+  // Inisialisasi Web Audio Context saat user tap tombol (syarat iOS Safari)
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+  } catch (e) {}
+
+  // Minta izin sensor khusus iOS 13+ Safari
+  if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+    try {
+      const perm = await DeviceMotionEvent.requestPermission();
+      if (perm === 'granted') {
+        window.addEventListener('devicemotion', handleMotionEvent);
+      } else {
+        alert('Izin sensor iOS ditolak. Menggunakan mode simulasi/tombol uji.');
+      }
+    } catch (err) {
+      console.warn('DeviceMotion permission error (mungkin dibuka via HTTP biasa):', err);
+    }
+  } else {
+    window.addEventListener('devicemotion', handleMotionEvent);
+  }
+
+  connectMqtt();
+  running = true;
+  if (publishTimer) clearInterval(publishTimer);
+  publishTimer = setInterval(processAndPublishWindow, 1200);
+  document.getElementById('statusBanner').textContent = 'SENSOR AKTIF · MENGIRIM TELEMETRI';
+}
+
+function stopEdge() {
+  running = false;
+  if (publishTimer) clearInterval(publishTimer);
+  window.removeEventListener('devicemotion', handleMotionEvent);
+  if (mqttClient) mqttClient.end();
+  document.getElementById('connBadge').textContent = 'Offline';
+  document.getElementById('connBadge').className = 'badge';
+  document.getElementById('statusBanner').textContent = 'DIHENTIKAN';
+}
+
+function connectMqtt() {
+  const url = document.getElementById('brokerUrl').value.trim();
+  const proj = document.getElementById('projectId').value.trim();
+  if (mqttClient) mqttClient.end();
+
+  mqttClient = mqtt.connect(url);
+  mqttClient.on('connect', () => {
+    const badge = document.getElementById('connBadge');
+    badge.textContent = 'MQTT Terhubung';
+    badge.className = 'badge online';
+    mqttClient.subscribe(`quakeverify/${proj}/alerts`, { qos: 1 });
+    mqttClient.subscribe(`quakeverify/${proj}/status`, { qos: 0 });
+  });
+
+  mqttClient.on('message', (topic, message) => {
+    try {
+      const data = JSON.parse(message.toString());
+      const banner = document.getElementById('statusBanner');
+      if (topic.endsWith('/alerts') || data.status === 'EARTHQUAKE_ALERT' || data.status === 'STRUCTURAL_TILT_ALERT') {
+        banner.className = 'status-banner danger';
+        banner.textContent = `🚨 ${data.status}: ${data.mmi_estimate || ''}`;
+        playAlarmSiren();
+      } else if (data.status === 'LOCAL_DISTURBANCE') {
+        banner.className = 'status-banner warn';
+        banner.textContent = `⚠️ GANGGUAN LOKAL (${data.mmi_estimate})`;
+      } else if (data.status === 'NORMAL') {
+        banner.className = 'status-banner';
+        banner.textContent = `✅ AMAN (${data.mmi_estimate || 'Normal'})`;
+      }
+    } catch (e) {}
+  });
+}
+
+function processAndPublishWindow() {
+  if (!running) return;
+  const nowMs = Date.now();
+  let windowSamples = samples.slice(-8);
+
+  // Jika dibuka di HTTP non-HTTPS atau user menekan tombol Simulasi
+  if (nowMs < syntheticUntil || windowSamples.length < 2) {
+    windowSamples = [];
+    for (let i = 0; i < 6; i++) {
+      const t = performance.now() / 1000 + i * 0.05;
+      if (nowMs < syntheticUntil && syntheticMode === 'quake') {
+        windowSamples.push({
+          t,
+          ax: 2.9 * Math.sin(t * 14),
+          ay: 2.6 * Math.cos(t * 14),
+          az: 9.81 + 1.8 * Math.sin(t * 10),
+          gx: 0.6, gy: 0.5, gz: 0.3
+        });
+        document.getElementById('valSource').textContent = 'Simulasi Gempa Aktif';
+      } else if (nowMs < syntheticUntil && syntheticMode === 'bump') {
+        windowSamples.push({
+          t,
+          ax: (i === 2 ? 2.5 : 0.1),
+          ay: (i === 2 ? -2.2 : 0.1),
+          az: 9.81 + (i === 2 ? 2.0 : 0.05),
+          gx: 0.3, gy: 0.2, gz: 0.1
+        });
+        document.getElementById('valSource').textContent = 'Simulasi Senggolan Meja';
+      } else {
+        windowSamples.push({
+          t,
+          ax: (Math.random() - 0.5) * 0.06,
+          ay: (Math.random() - 0.5) * 0.06,
+          az: 9.81 + (Math.random() - 0.5) * 0.06,
+          gx: 0.01, gy: 0.01, gz: 0.01
+        });
+        if (samples.length < 2) document.getElementById('valSource').textContent = 'Fallback Sensor Standby';
+      }
+    }
+  }
+
+  // Data Processing 1: PGA & RMS Getaran + STA/LTA
+  let dynAccels = [];
+  let tilts = [];
+  for (const s of windowSamples) {
+    const mag = Math.sqrt(s.ax * s.ax + s.ay * s.ay + s.az * s.az);
+    dynAccels.push(Math.abs(mag - 9.81));
+    if (!refGravity && mag > 1.0) {
+      refGravity = [s.ax / mag, s.ay / mag, s.az / mag];
+    }
+    if (refGravity && mag > 1.0) {
+      const dot = Math.max(-1, Math.min(1, (s.ax / mag) * refGravity[0] + (s.ay / mag) * refGravity[1] + (s.az / mag) * refGravity[2]));
+      tilts.push(Math.acos(dot) * (180 / Math.PI));
+    } else {
+      tilts.push(0);
+    }
+  }
+
+  const pga = Math.max(...dynAccels);
+  const rms = Math.sqrt(dynAccels.reduce((a, b) => a + b * b, 0) / dynAccels.length);
+  ltaBaseline = 0.92 * ltaBaseline + 0.08 * Math.max(rms, 0.05);
+  const staLta = rms / Math.max(ltaBaseline, 0.03);
+
+  // Data Processing 2: 3D Tilt & Rotational Energy
+  const tiltDeg = tilts.reduce((a, b) => a + b, 0) / tilts.length;
+  let rotRad = 0;
+  for (let i = 1; i < windowSamples.length; i++) {
+    const dt = Math.max(0.02, Math.min(0.5, windowSamples[i].t - windowSamples[i - 1].t));
+    const s = windowSamples[i];
+    rotRad += Math.sqrt(s.gx * s.gx + s.gy * s.gy + s.gz * s.gz) * dt;
+  }
+
+  seq += 1;
+  const devId = document.getElementById('deviceId').value;
+  const proj = document.getElementById('projectId').value.trim();
+
+  const payload = {
+    device_id: devId,
+    sequence: seq,
+    pga_ms2: Number(pga.toFixed(3)),
+    vibration_rms: Number(rms.toFixed(3)),
+    tilt_deg: Number(tiltDeg.toFixed(2)),
+    rot_energy_rad: Number(rotRad.toFixed(3)),
+    sta_lta_ratio: Number(staLta.toFixed(2)),
+    sent_at_ms: Date.now()
+  };
+
+  document.getElementById('valPga').textContent = payload.pga_ms2.toFixed(3);
+  document.getElementById('valRms').textContent = payload.vibration_rms.toFixed(3);
+  document.getElementById('valTilt').textContent = payload.tilt_deg.toFixed(2);
+  document.getElementById('valSta').textContent = payload.sta_lta_ratio.toFixed(2);
+  document.getElementById('valSeq').textContent = seq;
+
+  if (mqttClient && mqttClient.connected) {
+    mqttClient.publish(`quakeverify/${proj}/edge/${devId}/telemetry`, JSON.stringify(payload), { qos: 1 });
+  }
+}
+</script>
+</body>
+</html>
